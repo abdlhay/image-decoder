@@ -3,6 +3,7 @@
 //
 
 #include "decoder_jpeg.h"
+#include "cmyk.h"
 #include "log.h"
 #include "row_convert.h"
 #include <algorithm>
@@ -115,13 +116,10 @@ void JpegDecoder::decode(uint8_t* outPixels, Rect outRect, Rect inRect,
   }
 
   cmsHPROFILE src_profile = getColorProfile(jinfo);
-  bool naiveCmykConvert = false;
-
   if (!src_profile) {
     if (inType == TYPE_CMYK_8) {
-      // No embedded ICC profile for CMYK — use naive math conversion
-      // instead of the heavyweight U.S. Web Coated (SWOP) v2 profile.
-      naiveCmykConvert = true;
+      src_profile = cmsOpenProfileFromMem(CMYK_USWebCoatedSWOP_icc,
+                                          CMYK_USWebCoatedSWOP_icc_len);
     } else {
       inType = TYPE_RGBA_8;
       src_profile = cmsCreate_sRGBProfile();
@@ -132,16 +130,14 @@ void JpegDecoder::decode(uint8_t* outPixels, Rect outRect, Rect inRect,
     inType = TYPE_CMYK_8_REV;
   }
 
-  if (!naiveCmykConvert) {
-    useTransform = true;
+  useTransform = true;
 
-    transform =
-        cmsCreateTransform(src_profile, inType, targetProfile, TYPE_RGBA_8,
-                           cmsGetHeaderRenderingIntent(src_profile),
-                           inType == TYPE_RGBA_8 ? cmsFLAGS_COPY_ALPHA : 0);
+  transform =
+      cmsCreateTransform(src_profile, inType, targetProfile, TYPE_RGBA_8,
+                         cmsGetHeaderRenderingIntent(src_profile),
+                         inType == TYPE_RGBA_8 ? cmsFLAGS_COPY_ALPHA : 0);
 
-    cmsCloseProfile(src_profile);
-  }
+  cmsCloseProfile(src_profile);
 
   jinfo->out_color_space = inType == TYPE_GRAY_8       ? JCS_GRAYSCALE
                            : inType == TYPE_CMYK_8     ? JCS_CMYK
@@ -215,32 +211,6 @@ void JpegDecoder::decode(uint8_t* outPixels, Rect outRect, Rect inRect,
       outPixelsPos += outStride;
 
       jpeg_skip_scanlines(jinfo, skipEnd);
-    }
-  }
-
-  // Naive CMYK to RGBA conversion when no ICC profile is available.
-  // Uses the standard formula: R = 255 * (1-C) * (1-K), etc.
-  if (naiveCmykConvert) {
-    bool adobeCmyk = jinfo->saw_Adobe_marker;
-    uint32_t totalPixels = outRect.width * outRect.height;
-    for (uint32_t i = 0; i < totalPixels; i++) {
-      uint8_t c = outPixels[i * 4];
-      uint8_t m = outPixels[i * 4 + 1];
-      uint8_t y = outPixels[i * 4 + 2];
-      uint8_t k = outPixels[i * 4 + 3];
-
-      if (adobeCmyk) {
-        // Adobe CMYK: values are inverted (0 = full ink, 255 = no ink)
-        outPixels[i * 4]     = (uint8_t)(c * k / 255);
-        outPixels[i * 4 + 1] = (uint8_t)(m * k / 255);
-        outPixels[i * 4 + 2] = (uint8_t)(y * k / 255);
-      } else {
-        // Standard CMYK: 0 = no ink, 255 = full ink
-        outPixels[i * 4]     = (uint8_t)((255 - c) * (255 - k) / 255);
-        outPixels[i * 4 + 1] = (uint8_t)((255 - m) * (255 - k) / 255);
-        outPixels[i * 4 + 2] = (uint8_t)((255 - y) * (255 - k) / 255);
-      }
-      outPixels[i * 4 + 3] = 255; // Alpha
     }
   }
 
