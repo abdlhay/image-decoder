@@ -52,4 +52,3 @@ if(WITH_JXL)
 endif()
 
 target_link_libraries(imagedecoder android jnigraphics log)
-target_link_options(imagedecoder PRIVATE "-Wl,-z,max-page-size=16384")
